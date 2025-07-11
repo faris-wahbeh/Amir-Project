@@ -10,7 +10,6 @@ INITIAL_INVESTMENT = 100.0
 @st.cache_data
 def load_ranked_returns(file_path: str):
     df = pd.read_csv(file_path)
-    # normalize column names
     df.columns = (
         df.columns
           .str.strip()
@@ -20,12 +19,11 @@ def load_ranked_returns(file_path: str):
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
 
-    # pick out the return_rank_X columns in order
     return_cols = sorted(
         [c for c in df.columns if c.startswith("return_rank_")],
         key=lambda c: int(c.split("_")[-1])
     )
-    # "1.23%" → 1.23 (float)
+    # strip “%” and to float
     df[return_cols] = df[return_cols].replace("%", "", regex=True).astype(float)
     return df, return_cols
 
@@ -38,35 +36,37 @@ def calculate_declining_weights(num_positions: int, cash_pct: float) -> np.ndarr
     ranks = np.arange(num_positions, 0, -1)  # [N, N-1, …, 1]
     return ranks / ranks.sum() * total
 
-# ──────── per‐column compounding ────────────────────────────────────────────────
-def compute_position_values(
+# ──────── portfolio value calculation ───────────────────────────────────────────
+def calculate_monthly_portfolio_values(
     df: pd.DataFrame,
     return_cols: list[str],
     num_positions: int,
     cash_pct: float,
     initial_investment: float = INITIAL_INVESTMENT
-) -> pd.DataFrame:
+) -> pd.Series:
     """
-    Returns a DataFrame (same index as df, columns=top‐N ranks) where
-      value_t,i = allocation_i * ∏_{s=0..t} (1 + return_s,i/100).
+    Returns a Series of portfolio dollar values each month, starting at initial_investment.
+    - Allocates initial_investment * weight_i to each rank-i.
+    - Each month compounds that slice by (1 + return_i/100).
+    - Sums all positions to get total portfolio value.
     """
-    weights   = calculate_declining_weights(num_positions, cash_pct)
-    selected  = return_cols[:num_positions]
-    # dollars allocated to each rank-column
+    weights    = calculate_declining_weights(num_positions, cash_pct)
+    selected   = return_cols[:num_positions]
     allocation = weights * initial_investment
 
-    # build the factor series for each column: 1 + return/100
+    # build per-column monthly growth factors (1 + r_i / 100)
     factors = df[selected].div(100).add(1.0)
     # cumulative product down each column
     cum_factors = factors.cumprod()
-    # multiply by the allocation dollars
+    # multiply each column by its allocation
     position_values = cum_factors.multiply(allocation, axis=1)
-    position_values.columns = selected
-    return position_values
+    # sum across columns to get total portfolio value each month
+    portfolio_series = position_values.sum(axis=1)
+    portfolio_series.name = "Portfolio Value"
+    return portfolio_series
 
 # ──────── benchmark data ───────────────────────────────────────────────────────
 def get_actual_benchmark_returns() -> list[float]:
-    """Hard‐coded actual monthly return % for the benchmark."""
     return [
         5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
         3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -89,47 +89,30 @@ def main():
     num_positions = st.sidebar.slider("Number of Positions", 1, 15, 5)
     cash_pct      = st.sidebar.slider("Cash %", 0.0, 100.0, 15.0) / 100.0
 
-    # ---- compute compounded position values ----
-    pos_vals = compute_position_values(df, return_cols, num_positions, cash_pct)
-
-    # ---- portfolio total value each month ----
-    portfolio_series = pos_vals.sum(axis=1)
-    portfolio_series.name = "Model Portfolio Value"
-
-    # ---- derive monthly net returns from the compounded values ----
-    monthly_net_return = portfolio_series.pct_change().fillna(0)
-
-    # ---- show the position‐by‐position values ----
-    with st.expander("📊 Position Values Over Time"):
-        st.dataframe(pos_vals.style.format("{:.2f}"))
-
-    # ---- show the monthly net returns ----
-    st.subheader("Monthly Net Returns")
-    st.dataframe(
-        (monthly_net_return * 100)
-          .round(2)
-          .astype(str)
-          .add("%")
-          .to_frame("Net Return")
+    # ---- compute portfolio values ----
+    portfolio_series = calculate_monthly_portfolio_values(
+        df, return_cols, num_positions, cash_pct
     )
 
-    # ---- compound the benchmark the same way ----
-    bench_pct = get_actual_benchmark_returns()[: len(df)]
-    bench_factors = pd.Series(bench_pct, index=df.index).div(100).add(1.0)
+    # ---- show the monthly portfolio values ----
+    st.subheader("Monthly Portfolio Value")
+    st.dataframe(portfolio_series.round(2).to_frame("Value ($)"))
+
+    # ---- benchmark compounding ----
+    bench_pct      = get_actual_benchmark_returns()[: len(df)]
+    bench_factors  = pd.Series(bench_pct, index=df.index).div(100).add(1.0)
     benchmark_series = bench_factors.cumprod().mul(INITIAL_INVESTMENT)
     benchmark_series.name = "Benchmark Value"
 
-    # ---- plot both ----
+    # ---- plot both series ----
     combined = pd.concat([portfolio_series, benchmark_series], axis=1)
     st.subheader("Portfolio Value Over Time")
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(combined.index, combined["Model Portfolio Value"], label="Model", linewidth=2)
-    ax.plot(combined.index, combined["Benchmark Value"],       label="Benchmark", color="orange", linewidth=2)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Value ($)")
+    ax.plot(combined.index, combined["Portfolio Value"], label="Model", linewidth=2)
+    ax.plot(combined.index, combined["Benchmark Value"], label="Benchmark", color="orange", linewidth=2)
+    ax.set_xlabel("Date"); ax.set_ylabel("Value ($)")
     ax.set_title("Compounded Portfolio vs Benchmark")
-    ax.legend()
-    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(); ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
     # ---- performance metrics ----
