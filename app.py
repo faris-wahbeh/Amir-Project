@@ -1,140 +1,122 @@
+# app.py
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
 # ── Constants ─────────────────────────────────────────────────────
-INITIAL_INVESTMENT = 100.0     # starting portfolio value
-DEFAULT_REBALANCE_MONTHS = 1   # fixed monthly rebalance
+INITIAL_INVESTMENT = 100.0
 
+# ── Data loading ──────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def load_returns(path):
-    """
-    Load rank‐based returns CSV, clean column names, parse dates,
-    and return a DataFrame plus the list of return_rank_* columns.
-    """
+def load_returns(path="ranked_returns_top15.csv"):
     df = pd.read_csv(path)
-    # normalize column names
+    # normalize & parse date
     df.columns = (
         df.columns
           .str.strip()
           .str.lower()
           .str.replace(r"\s+", "_", regex=True)
     )
-    if "date" not in df.columns:
-        raise KeyError(f"Expected a 'date' column, got {df.columns.tolist()}")
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
-    # identify and convert return columns
+
+    # find the return_rank_X columns
     ret_cols = sorted(
         [c for c in df.columns if c.startswith("return_rank_")],
         key=lambda c: int(c.rsplit("_",1)[-1])
     )
-    df[ret_cols] = df[ret_cols].replace("%","",regex=True).astype(float)
+    # strip "%" and to float
+    df[ret_cols] = df[ret_cols].astype(str).str.rstrip("%").astype(float)
     return df, ret_cols
 
+# (Optional) if you ever need exposures:
+# @st.cache_data(show_spinner=False)
+# def load_exposures(path="ranked_by_exposure_top15.csv"):
+#     df = pd.read_csv(path)
+#     ... normalize + parse date + strip "%"... 
+#     return df, exp_cols
+
+# ── Weighting utility ─────────────────────────────────────────────
 def compute_rank_weights(n, cash_pct):
     """
-    Linear declining weights for ranks 1…n summing to (1 - cash_pct).
+    Linear declining weights for ranks 1…n that sum to (1 - cash_pct).
     """
-    if n < 1:
-        return np.array([])
     budget = 1.0 - cash_pct
     ranks = np.arange(n, 0, -1)
     return ranks / ranks.sum() * budget
 
+
+# ── Streamlit App ─────────────────────────────────────────────────
 def main():
-    st.set_page_config(page_title="Rank‐Weighted Backtest", layout="wide")
-    st.title("Rank‐Weighted Backtest")
-    st.markdown("#### Fixed monthly rebalance & linear rank weights")
+    st.set_page_config(page_title="Rank-Weighted Backtest", layout="wide")
+    st.title("Rank-Weighted Backtest")
+    st.markdown("Monthly compounding • Linear rank weights • Custom rebalance frequency")
 
-    # ── Load model return data ─────────────────────────────────────
-    df_ret, ret_cols = load_returns("ranked_returns_top15.csv")
+    # 1) Load returns pivot
+    df_ret, ret_cols = load_returns()
 
-    # ── Define user‐provided actual monthly RETURN %s ─────────────
-    monthly_returns = [
-        5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
-        3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
-        -6.38, 0.6, 5.64, 0.68, 5.59, -6.47, -14.21, 14.33, 9.07, 3.96,
-        6.06, 6.67, -3.01, -3.56, 11.92, 7.29, -2.44, 8.33, -6.72, 5.05,
-        -6.17, 6.33, 3.65, 5.27, -2.18, 3.22, -1.75, 0.02, -12.82, -0.39,
-        -2.01, -9.02, -9.27, -8.22, 9.11, -2.98, -7.97, 1.83, 4.05, -2.56
-    ]
-    # explicitly compound the actual returns
-    actual_values = [INITIAL_INVESTMENT]
-    for r in monthly_returns:
-        actual_values.append(actual_values[-1] * (1 + r/100))
-    actual_values = actual_values[1:]  # drop the initial seed
-    actual_series = pd.Series(
-        data=actual_values,
-        index=df_ret.index[:len(actual_values)],
-        name="Actual Value"
-    )
-
-    # ── Sidebar: portfolio inputs ──────────────────────────────────
+    # 2) Sidebar controls
     st.sidebar.header("Portfolio Settings")
-    n = st.sidebar.slider("Number of Positions", 1, len(ret_cols), len(ret_cols))
-    cash_pct = st.sidebar.slider("Cash % (uninvested)", 0.0, 100.0, 15.0) / 100.0
+    N = st.sidebar.slider("Number of positions (N)", 1, len(ret_cols), len(ret_cols))
+    cash_pct = st.sidebar.slider("Cash % (uninvested)", 0.0, 100.0, 0.0) / 100.0
+    reb_cost = st.sidebar.slider("Rebalance cost %", 0.0, 5.0, 0.1, step=0.01) / 100.0
+    freq = st.sidebar.selectbox("Rebalance frequency",
+                                ["Monthly", "Quarterly", "Semi-Annual"])
 
-    # compute and display rank‐based weights
-    weights = compute_rank_weights(n, cash_pct)
+    # map frequency to interval
+    interval_map = {"Monthly": 1, "Quarterly": 3, "Semi-Annual": 6}
+    interval = interval_map[freq]
+
+    # 3) Compute the rank weights
+    weights = compute_rank_weights(N, cash_pct)
     st.sidebar.markdown("**Rank Weights**")
     for i, w in enumerate(weights, start=1):
         st.sidebar.write(f"Rank {i}: {w*100:.2f}%")
     st.sidebar.write(f"Cash: {cash_pct*100:.2f}%")
+    st.sidebar.write(f"Rebalance every **{interval}** month(s)")
 
-    # ── Model: compute period returns ──────────────────────────────
-    periods = len(df_ret)
-    rebalance_flag = (np.arange(periods) % DEFAULT_REBALANCE_MONTHS == 0)
-    # build weight matrix and forward‐fill
-    w = pd.DataFrame(0.0, index=df_ret.index, columns=ret_cols)
-    w.loc[rebalance_flag, ret_cols[:len(weights)]] = weights
+    # 4) Build the weight matrix over time
+    df = df_ret.copy()
+    periods = len(df)
+    idxs = np.arange(periods)
+
+    # flag rows to rebalance on
+    rebalance_flag = (idxs % interval == 0)
+
+    # DataFrame of zeros, then set weights on rebalance points
+    w = pd.DataFrame(0.0, index=df.index, columns=ret_cols)
+    w.iloc[rebalance_flag, :N] = weights  # first N columns get the weights
     w = w.ffill().fillna(0.0)
-    # calculate the list of period returns
-    period_ret = (w * df_ret[ret_cols] / 100.0).sum(axis=1)
-    model_returns = period_ret.tolist()
 
-    # ── Model: compound returns explicitly ────────────────────────
+    # 5) Compute period returns (decimal): df_ret holds percents, so divide by 100
+    period_ret = (w.values * (df[ret_cols].values / 100.0)).sum(axis=1)
+
+    # 6) Compound the portfolio value
     model_values = [INITIAL_INVESTMENT]
-    for r in model_returns:
+    for r in period_ret:
         model_values.append(model_values[-1] * (1 + r))
-    model_values = model_values[1:]
     model_series = pd.Series(
-        data=model_values,
-        index=period_ret.index,
+        data=model_values[1:],  # drop the initial seed
+        index=df.index,
         name="Model Value"
     )
 
-    # ── Plot both series with zoomed y‐axis ────────────────────────
-    combined = pd.concat([model_series, actual_series], axis=1)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(combined.index, combined["Model Value"],  label="Model Value", linewidth=2)
-    ax.plot(combined.index, combined["Actual Value"], label="Actual Value", linewidth=2)
-    ymin, ymax = combined.min().min() * 0.99, combined.max().max() * 1.01
-    ax.set_ylim(ymin, ymax)
-    ax.set_title("Model vs Actual Portfolio Value", fontsize=14)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Portfolio Value ($)")
-    ax.legend()
-    ax.grid(True, linestyle="--", alpha=0.5)
-    st.pyplot(fig)
+    # 7) Plot
+    st.line_chart(model_series.to_frame())
 
-    # ── Performance metrics ────────────────────────────────────────
-    final_m = model_series.iloc[-1]
-    final_a = actual_series.iloc[-1]
-    total_m = (final_m - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
-    total_a = (final_a - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
-    ann_m   = (final_m / INITIAL_INVESTMENT) ** (12/len(model_series)) - 1
-    ann_a   = (final_a / INITIAL_INVESTMENT) ** (12/len(actual_series)) - 1
+    # 8) Metrics
+    final_val = model_series.iloc[-1]
+    total_ret = final_val / INITIAL_INVESTMENT - 1
+    ann_ret = (final_val / INITIAL_INVESTMENT) ** (12/periods) - 1
 
     st.subheader("Performance Metrics")
-    c1, c2 = st.columns(2)
-    c1.metric("Model Total Return",  f"{total_m:.2%}")
-    c1.metric("Model Final Value",  f"${final_m:,.2f}")
-    c1.metric("Model Annual Return", f"{ann_m:.2%}")
-    c2.metric("Actual Total Return",  f"{total_a:.2%}")
-    c2.metric("Actual Final Value",  f"${final_a:,.2f}")
-    c2.metric("Actual Annual Return", f"{ann_a:.2%}")
+    col1, col2 = st.columns(2)
+    col1.metric("Total Return", f"{total_ret:.2%}")
+    col1.metric("Final Value", f"${final_val:,.2f}")
+    col2.metric("Annualized Return", f"{ann_ret:.2%}")
+    col2.metric("Rebalance Cost", f"{reb_cost*100:.2f}% per event")
+
 
 if __name__ == "__main__":
     main()
