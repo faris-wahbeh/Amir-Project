@@ -4,14 +4,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ── Constants ─────────────────────────────────────────────────────
-INITIAL_INVESTMENT      = 100.0   # starting portfolio value
-DEFAULT_REBALANCE_MONTHS = 1      # fixed monthly rebalance
+INITIAL_INVESTMENT       = 100.0   # starting portfolio value
+DEFAULT_REBALANCE_MONTHS = 1       # fixed monthly rebalance
 
 @st.cache_data(show_spinner=False)
 def load_data(exp_path: str, ret_path: str):
     """
     Load exposures & returns from CSV, normalize column names & dates,
-    identify the return_rank_* columns.
+    identify the return_rank_* columns, strip '%' and convert to float.
     """
     df_exp = pd.read_csv(exp_path)
     df_ret = pd.read_csv(ret_path)
@@ -32,15 +32,16 @@ def load_data(exp_path: str, ret_path: str):
     df_exp = normalize(df_exp)
     df_ret = normalize(df_ret)
 
+    # Identify return‐rank columns
     ret_cols = sorted(
         [c for c in df_ret.columns if c.startswith("return_rank_")],
         key=lambda c: int(c.rsplit("_",1)[-1])
     )
-    # strip "%" if present and convert to float
+
+    # Strip "%" if present across the DataFrame and convert to float
     df_ret[ret_cols] = (
         df_ret[ret_cols]
-          .astype(str)
-          .str.rstrip("%")
+          .replace("%", "", regex=True)
           .astype(float)
     )
 
@@ -61,7 +62,7 @@ def main():
     st.title("Rank‐Weighted Backtest")
     st.markdown("#### Fixed monthly rebalance & linear rank weights from your two CSVs")
 
-    # ── Load your CSVs from the same folder ─────────────────────────
+    # ── Load your CSVs (must be in the same folder) ───────────────
     try:
         df_exp, df_ret, ret_cols = load_data(
             "ranked_by_exposure_top15.csv",
@@ -81,7 +82,7 @@ def main():
 
     # Compute & display rank‐based weights
     weights = compute_rank_weights(n, cash_pct)
-    st.sidebar.markdown("**Rank Weights**")
+    st.sidebar.markdown("**Rank Weights (sum to 100% − cash)**")
     for i, w in enumerate(weights, start=1):
         st.sidebar.write(f"Rank {i}: {w*100:.2f}%")
     st.sidebar.write(f"Cash: {cash_pct*100:.2f}%")
@@ -95,7 +96,7 @@ def main():
     W = W.ffill().fillna(0.0)
 
     period_ret    = (W * df_ret[ret_cols] / 100.0).sum(axis=1)
-    model_returns = period_ret.tolist()  # e.g. [0.0534, 0.0016, ...]
+    model_returns = period_ret.tolist()  # plain Python list of floats
 
     # ── Compound model returns from $100 ──────────────────────────
     model_values = [INITIAL_INVESTMENT]
