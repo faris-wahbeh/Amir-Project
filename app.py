@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 INITIAL_INVESTMENT = 100.0
 
 @st.cache_data
-def load_ranked_returns(file_path):
+def load_ranked_returns(file_path: str):
+    """Load CSV, clean column names, parse dates, convert % strings → floats."""
     df = pd.read_csv(file_path)
     df.columns = (
         df.columns
@@ -23,18 +24,39 @@ def load_ranked_returns(file_path):
         key=lambda c: int(c.split("_")[-1])
     )
 
-    # Convert % strings to floats
+    # "0.32%" → 0.32
     df[return_cols] = df[return_cols].replace("%", "", regex=True).astype(float)
     return df, return_cols
 
-def calculate_declining_weights(num_positions, cash_pct):
+def calculate_declining_weights(num_positions: int, cash_pct: float) -> np.ndarray:
+    """
+    Generate weights that decline linearly from rank 1 to rank N,
+    summing to (1 - cash_pct).
+    """
     total_weight = 1.0 - cash_pct
-    ranks = np.arange(num_positions, 0, -1)  # e.g., [5,4,3,2,1]
+    ranks = np.arange(num_positions, 0, -1)  # e.g. [5,4,3,2,1]
     weights = ranks / ranks.sum() * total_weight
     return weights
 
-def get_actual_benchmark_returns():
-    # Hardcoded actual monthly return %
+def compute_portfolio_returns(
+    df: pd.DataFrame,
+    return_cols: list[str],
+    num_positions: int,
+    cash_pct: float
+) -> pd.Series:
+    """
+    For each month, take the top-N returns, convert % → decimal,
+    multiply by their declining weights, and sum.
+    Returns a Series of monthly portfolio returns (as decimals).
+    """
+    weights = calculate_declining_weights(num_positions, cash_pct)
+    selected = return_cols[:num_positions]
+    # df[selected] holds percentages like 0.32 → divide by 100 to get 0.0032
+    weighted = df[selected].div(100).multiply(weights, axis=1)
+    return weighted.sum(axis=1)
+
+def get_actual_benchmark_returns() -> list[float]:
+    """Hard-coded monthly benchmark returns in percent."""
     return [
         5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
         3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -48,63 +70,54 @@ def main():
     st.set_page_config(page_title="Compounding Weighted Portfolio", layout="wide")
     st.title("Ranked Portfolio vs Benchmark")
 
-    # Load return data
+    # 1) Load data
     df, return_cols = load_ranked_returns("ranked_returns_top15.csv")
 
-    # Sidebar inputs
+    # 2) Sidebar controls
     st.sidebar.header("Settings")
-    num_positions = st.sidebar.slider("Number of Positions", min_value=1, max_value=15, value=5)
-    cash_pct = st.sidebar.slider("Cash %", min_value=0.0, max_value=100.0, value=15.0) / 100.0
+    num_positions = st.sidebar.slider("Number of Positions", 1, 15, 5)
+    cash_pct = st.sidebar.slider("Cash %", 0.0, 100.0, 15.0) / 100.0
 
-    # Compute weights
-    weights = calculate_declining_weights(num_positions, cash_pct)
-    selected_cols = return_cols[:num_positions]
+    # 3) Compute monthly portfolio returns
+    portfolio_returns = compute_portfolio_returns(df, return_cols, num_positions, cash_pct)
 
-    # DEBUG: show weights and their sum
-    st.write("**Selected ranks & weights:**", dict(zip(selected_cols, weights)))
-    st.write(f"**Sum of weights (should be {1-cash_pct:.2f}):**", weights.sum())
-
-    # Monthly weighted returns
-    weighted_returns = df[selected_cols].div(100) * weights
-    portfolio_returns = weighted_returns.sum(axis=1)
-
-    # Compound model portfolio via cumprod
+    # 4) Compound the model portfolio
     model_series = (1 + portfolio_returns).cumprod() * INITIAL_INVESTMENT
     model_series.name = "Model Portfolio"
 
-    # Compound benchmark the same way
-    bench_list = get_actual_benchmark_returns()
-    bench_returns = pd.Series(bench_list[: len(df)]).div(100).set_axis(df.index[: len(df)])
+    # 5) Compound the benchmark
+    bench_percents = get_actual_benchmark_returns()
+    bench_returns = (
+        pd.Series(bench_percents[: len(df)], index=df.index)
+        .div(100)
+    )
     actual_series = (1 + bench_returns).cumprod() * INITIAL_INVESTMENT
     actual_series.name = "Benchmark"
 
-    # Combine for plotting
+    # 6) Plot both
     combined = pd.concat([model_series, actual_series], axis=1)
-
-    # Plot
     st.subheader("Portfolio Value Over Time")
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(combined.index, combined["Model Portfolio"], label="Model Portfolio", linewidth=2)
-    ax.plot(combined.index, combined["Benchmark"], label="Benchmark (Actual)", linewidth=2, color="orange")
+    ax.plot(combined.index, combined["Benchmark"],       label="Benchmark (Actual)", linewidth=2, color="orange")
     ax.set_title("Model vs Benchmark Portfolio Value", fontsize=14)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Value ($)")
-    ax.legend()
-    ax.grid(True, linestyle="--", alpha=0.5)
+    ax.set_xlabel("Date"); ax.set_ylabel("Value ($)")
+    ax.legend(); ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
-    # Performance metrics (Model only)
+    # 7) Performance metrics
     st.subheader("Model Performance")
-    final_value = model_series.iloc[-1]
-    total_return = (final_value - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
-    annual_return = (final_value / INITIAL_INVESTMENT) ** (12 / len(model_series)) - 1
+    final_val     = model_series.iloc[-1]
+    total_return  = (final_val - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
+    annual_return = (final_val / INITIAL_INVESTMENT) ** (12 / len(model_series)) - 1
 
-    st.metric("Final Value", f"${final_value:.2f}")
-    st.metric("Total Return", f"{total_return:.2%}")
-    st.metric("Annualized Return", f"{annual_return:.2%}")
+    st.metric("Final Value",        f"${final_val:.2f}")
+    st.metric("Total Return",       f"{total_return:.2%}")
+    st.metric("Annualized Return",  f"{annual_return:.2%}")
 
+    # 8) Optionally show the raw monthly returns
     with st.expander("Show Monthly Portfolio Returns"):
-        st.dataframe(portfolio_returns.apply(lambda x: f"{x*100:.2f}%"))
+        st.dataframe(portfolio_returns.mul(100).round(2).astype(str) + "%")
 
 if __name__ == "__main__":
     main()
