@@ -29,12 +29,11 @@ def load_ranked_returns(file_path):
 
 def calculate_declining_weights(num_positions, cash_pct):
     total_weight = 1.0 - cash_pct
-    ranks = np.arange(num_positions, 0, -1)  # e.g., [5,4,3,2,1]
+    ranks = np.arange(num_positions, 0, -1)
     weights = ranks / ranks.sum() * total_weight
     return weights
 
 def get_actual_benchmark_returns():
-    # Hardcoded actual monthly return %
     return [
         5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
         3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -45,57 +44,52 @@ def get_actual_benchmark_returns():
     ]
 
 def main():
-    st.set_page_config(page_title="Compounding Weighted Portfolio", layout="wide")
-    st.title("Ranked Portfolio vs Benchmark")
+    st.set_page_config(page_title="Ranked Portfolio Backtest", layout="wide")
+    st.title("Ranked Portfolio Backtest (Correct Compounding)")
 
-    # Load return data
+    # Load ranked return data
     df, return_cols = load_ranked_returns("ranked_returns_top15.csv")
 
-    # Sidebar inputs
+    # Sidebar
     st.sidebar.header("Settings")
-    num_positions = st.sidebar.slider("Number of Positions", min_value=1, max_value=15, value=5)
-    cash_pct = st.sidebar.slider("Cash %", min_value=0.0, max_value=100.0, value=15.0) / 100.0
+    num_positions = st.sidebar.slider("Number of Positions", 1, 15, 5)
+    cash_pct = st.sidebar.slider("Cash %", 0.0, 100.0, 15.0) / 100.0
 
+    # Calculate weights
     weights = calculate_declining_weights(num_positions, cash_pct)
-
-    # Use only top N rank columns
     selected_cols = return_cols[:num_positions]
-    weighted_returns = df[selected_cols].div(100) * weights  # Elementwise return * weight
 
-    # Sum weighted returns into a single portfolio return per month
-    portfolio_returns = weighted_returns.sum(axis=1)
+    # Multiply each return column by its weight (converted to decimal)
+    weighted_returns = df[selected_cols].copy()
+    for i, col in enumerate(selected_cols):
+        weighted_returns[col] = weighted_returns[col] * weights[i] / 100.0
 
-    # Compound model portfolio value
-    model_values = [INITIAL_INVESTMENT]
-    for r in portfolio_returns:
-        model_values.append(model_values[-1] * (1 + r))
-    model_values = model_values[1:]
-    model_series = pd.Series(model_values, index=portfolio_returns.index, name="Model Portfolio")
+    # Sum across columns → monthly portfolio return
+    monthly_portfolio_returns = weighted_returns.sum(axis=1)
 
-    # Benchmark: hardcoded actual returns
-    actual_returns = get_actual_benchmark_returns()
-    actual_values = [INITIAL_INVESTMENT]
-    for r in actual_returns[:len(df)]:
-        actual_values.append(actual_values[-1] * (1 + r / 100))
-    actual_values = actual_values[1:]
-    actual_series = pd.Series(actual_values, index=df.index[:len(actual_values)], name="Benchmark")
+    # Compound over time
+    portfolio_values = [INITIAL_INVESTMENT]
+    for r in monthly_portfolio_returns:
+        portfolio_values.append(portfolio_values[-1] * (1 + r))
+    portfolio_values = portfolio_values[1:]
+    model_series = pd.Series(portfolio_values, index=monthly_portfolio_returns.index, name="Model Portfolio")
+
+    # Benchmark: display-only
+    benchmark_returns = get_actual_benchmark_returns()
+    benchmark_values = [INITIAL_INVESTMENT]
+    for r in benchmark_returns[:len(df)]:
+        benchmark_values.append(benchmark_values[-1] * (1 + r / 100.0))
+    benchmark_values = benchmark_values[1:]
+    benchmark_series = pd.Series(benchmark_values, index=df.index[:len(benchmark_values)], name="Benchmark")
 
     # Combine for plotting
-    combined = pd.concat([model_series, actual_series], axis=1)
+    combined = pd.concat([model_series, benchmark_series], axis=1)
 
     # Plot
     st.subheader("Portfolio Value Over Time")
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(combined.index, combined["Model Portfolio"], label="Model Portfolio", linewidth=2)
-    ax.plot(combined.index, combined["Benchmark"], label="Benchmark (Actual)", linewidth=2, color="orange")
-    ax.set_title("Model vs Benchmark Portfolio Value", fontsize=14)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Value ($)")
-    ax.legend()
-    ax.grid(True, linestyle="--", alpha=0.5)
-    st.pyplot(fig)
+    st.line_chart(combined)
 
-    # Show performance metrics (Model only)
+    # Metrics
     st.subheader("Model Performance")
     final_value = model_series.iloc[-1]
     total_return = (final_value - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
@@ -105,8 +99,8 @@ def main():
     st.metric("Total Return", f"{total_return:.2%}")
     st.metric("Annualized Return", f"{annual_return:.2%}")
 
-    with st.expander("Show Monthly Portfolio Returns"):
-        st.dataframe(portfolio_returns.apply(lambda x: f"{x*100:.2f}%"))
+    with st.expander("Monthly Portfolio Returns"):
+        st.dataframe(monthly_portfolio_returns.apply(lambda x: f"{x*100:.2f}%"))
 
 if __name__ == "__main__":
     main()
