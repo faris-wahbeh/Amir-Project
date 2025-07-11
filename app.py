@@ -8,10 +8,6 @@ INITIAL_INVESTMENT = 100.0
 
 @st.cache_data
 def load_ranked_returns(file_path: str):
-    """
-    Load CSV of ranked returns, normalize column names, parse dates,
-    convert “0.32%” strings to floats like 0.32.
-    """
     df = pd.read_csv(file_path)
     df.columns = (
         df.columns
@@ -19,7 +15,7 @@ def load_ranked_returns(file_path: str):
           .str.lower()
           .str.replace(r"\s+", "_", regex=True)
     )
-    df["date"] = pd.to_datetime(df["date"], dayfirst=False)
+    df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
 
     return_cols = sorted(
@@ -27,21 +23,36 @@ def load_ranked_returns(file_path: str):
         key=lambda c: int(c.split("_")[-1])
     )
 
-    # strip “%” and to float
+    # "0.32%" → 0.32 (float)
     df[return_cols] = df[return_cols].replace("%", "", regex=True).astype(float)
     return df, return_cols
 
 def calculate_declining_weights(num_positions: int, cash_pct: float) -> np.ndarray:
     """
-    Return an array of weights for ranks 1…N that sum to (1 − cash_pct).
-    E.g. for N=4, cash_pct=0, returns [4,3,2,1]/10.
+    For ranks 1…N, return weights that decline linearly
+    and sum to (1 - cash_pct).
     """
     total = 1.0 - cash_pct
-    ranks = np.arange(num_positions, 0, -1)  # [N, N−1, …, 1]
+    ranks = np.arange(num_positions, 0, -1)   # [N, N-1, …, 1]
     return ranks / ranks.sum() * total
 
+def calculate_monthly_net_returns(
+    df: pd.DataFrame,
+    return_cols: list[str],
+    num_positions: int,
+    cash_pct: float
+) -> pd.Series:
+    """
+    Returns a Series of monthly net returns (as decimals), where
+      net_return_t = sum_{i=1..N} [ weight_i * return_rank_i_t ]
+    """
+    w = calculate_declining_weights(num_positions, cash_pct)
+    sel = return_cols[:num_positions]
+    # df[sel] are floats like 0.32 → divide by 100 to get 0.0032
+    weighted = df[sel].div(100).multiply(w, axis=1)
+    return weighted.sum(axis=1)
+
 def get_actual_benchmark_returns() -> list[float]:
-    """Hard-coded monthly benchmark returns, in percent."""
     return [
         5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
         3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -52,64 +63,54 @@ def get_actual_benchmark_returns() -> list[float]:
     ]
 
 def main():
-    st.set_page_config(page_title="Compounded Weighted Portfolio", layout="wide")
+    st.set_page_config(page_title="Compounding Weighted Portfolio", layout="wide")
     st.title("Ranked Portfolio vs Benchmark")
 
     # 1) Load data
     df, return_cols = load_ranked_returns("ranked_returns_top15.csv")
 
-    # 2) Sidebar settings
+    # 2) Settings
     st.sidebar.header("Settings")
     num_positions = st.sidebar.slider("Number of Positions", 1, 15, 5)
     cash_pct      = st.sidebar.slider("Cash %", 0.0, 100.0, 15.0) / 100.0
 
-    # 3) Compute weights and debug
-    weights  = calculate_declining_weights(num_positions, cash_pct)
-    selected = return_cols[:num_positions]
-    st.write("**Weights per rank:**", dict(zip(selected, weights)))
-    st.write("**Sum of weights (should = 1 – cash%):**", weights.sum())
+    # 3) Get your net returns per month
+    monthly_net = calculate_monthly_net_returns(df, return_cols, num_positions, cash_pct)
+    st.write("### Sample net returns (first 5 months)", monthly_net.head())
 
-    # 4) Build portfolio returns (decimal)
-    #    r_i are in percent (e.g. 0.32), so /100 → decimal
-    weighted_returns   = df[selected].div(100).multiply(weights, axis=1)
-    portfolio_returns  = weighted_returns.sum(axis=1)   # ∑ w_i * r_i
-
-    # 5) Compound correctly: factor_t = 1 + r_port_t
-    factor_series = (1 + portfolio_returns)
-    model_series  = factor_series.cumprod() * INITIAL_INVESTMENT
+    # 4) Compound *after* you've got the list of net returns
+    #    factor = 1 + r_net; cumprod; scale by INITIAL_INVESTMENT
+    model_series = (1 + monthly_net).cumprod() * INITIAL_INVESTMENT
     model_series.name = "Model Portfolio"
 
-    # 6) Compound benchmark the same way
-    bench_pct_list  = get_actual_benchmark_returns()
-    bench_returns   = pd.Series(bench_pct_list[:len(df)], index=df.index) / 100
-    bench_factors   = 1 + bench_returns
-    benchmark_series = bench_factors.cumprod() * INITIAL_INVESTMENT
-    benchmark_series.name = "Benchmark"
+    # 5) Benchmark
+    bench_pct_list = get_actual_benchmark_returns()
+    bench_net = pd.Series(bench_pct_list[:len(df)], index=df.index) / 100
+    bench_series = (1 + bench_net).cumprod() * INITIAL_INVESTMENT
+    bench_series.name = "Benchmark"
 
-    # 7) Plot the two
-    combined = pd.concat([model_series, benchmark_series], axis=1)
+    # 6) Plot
+    combined = pd.concat([model_series, bench_series], axis=1)
     st.subheader("Portfolio Value Over Time")
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(combined.index, combined["Model Portfolio"], label="Model", linewidth=2)
-    ax.plot(combined.index, combined["Benchmark"],       label="Benchmark", color="orange", linewidth=2)
-    ax.set_xlabel("Date"); ax.set_ylabel("Portfolio Value ($)")
-    ax.set_title("Compounded Value: Model vs. Benchmark")
-    ax.legend(); ax.grid(True, linestyle="--", alpha=0.4)
+    ax.plot(combined.index, combined["Benchmark"],       label="Benchmark", linewidth=2, color="orange")
+    ax.set_xlabel("Date"); ax.set_ylabel("Value ($)")
+    ax.legend(); ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
-    # 8) Performance metrics
+    # 7) Metrics
     st.subheader("Model Performance")
     final_val = model_series.iloc[-1]
-    total_ret = (final_val - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
-    ann_ret   = (final_val / INITIAL_INVESTMENT) ** (12 / len(model_series)) - 1
-
+    total_r   = (final_val - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
+    ann_r     = (final_val / INITIAL_INVESTMENT) ** (12 / len(model_series)) - 1
     st.metric("Final Value",       f"${final_val:.2f}")
-    st.metric("Total Return",      f"{total_ret:.2%}")
-    st.metric("Annualized Return", f"{ann_ret:.2%}")
+    st.metric("Total Return",      f"{total_r:.2%}")
+    st.metric("Annualized Return", f"{ann_r:.2%}")
 
-    # 9) Show the raw monthly returns if desired
-    with st.expander("Monthly Portfolio Returns"):
-        st.dataframe((portfolio_returns * 100).round(2).astype(str) + "%")
+    # 8) Optional raw net returns
+    with st.expander("Show Monthly Net Returns"):
+        st.dataframe((monthly_net * 100).round(2).astype(str) + "%")
 
 if __name__ == "__main__":
     main()
