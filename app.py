@@ -3,6 +3,15 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
+# --- App Layout & Style ---
+st.set_page_config(page_title="Top-N Portfolio Simulator", layout="centered")
+st.title("📈 Top-N Weighted Portfolio Simulator")
+
+st.markdown("""
+This tool allows you to simulate a **Top-N ranked portfolio** using weighted returns. 
+You can compare the result against a fixed reference portfolio.
+""")
+
 # --- 1. Portfolio Weighting Function ---
 def calculate_weights(num_positions):
     total_weight = 1.0
@@ -42,17 +51,15 @@ def compound_returns(returns, initial=100):
 def load_data():
     return pd.read_csv("ranked_returns_top15.csv", index_col=0, parse_dates=True, dayfirst=True)
 
-# --- Streamlit UI ---
-st.title("Top-N Weighted Portfolio Simulator")
-
+# --- Run App Logic ---
 df = load_data()
-num_positions = st.slider("Number of positions to invest in:", min_value=1, max_value=15, value=5)
+num_positions = st.slider("🎯 Select number of top positions", min_value=1, max_value=15, value=5)
 
-# Portfolio computation
+# Simulated portfolio
 portfolio_returns = calculate_portfolio_returns(df, num_positions)
 portfolio_compounded = compound_returns(portfolio_returns)
 
-# Base portfolio (from your list)
+# Reference/base portfolio
 base_returns = [ 
     5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
     3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -61,18 +68,29 @@ base_returns = [
     -6.17, 6.33, 3.65, 5.27, -2.18, 3.22, -1.75, 0.02, -12.82, -0.39,
     -2.01, -9.02, -9.27, -8.22, 9.11, -2.98, -7.97, 1.83, 4.05, -2.56
 ]
+
 base_returns_series = pd.Series(base_returns[:len(df)]) / 100
 base_compounded = compound_returns(base_returns_series)
 
-# Plotting
-fig, ax = plt.subplots()
-ax.plot(df.index[:len(portfolio_compounded)], portfolio_compounded, label="Top-N Portfolio")
-ax.plot(df.index[:len(base_compounded)], base_compounded, label="Base Portfolio", linestyle='--')
-ax.set_ylabel("Portfolio Value")
-ax.set_title("Portfolio Growth Over Time")
+# --- Plotting Section ---
+st.subheader("📊 Portfolio Performance Comparison")
+
+fig, ax = plt.subplots(figsize=(10, 5))
+ax.plot(df.index[:len(portfolio_compounded)], portfolio_compounded, label="Top-N Portfolio", linewidth=2)
+ax.plot(df.index[:len(base_compounded)], base_compounded, label="Reference Portfolio", linestyle='--', linewidth=2)
+
+ax.set_title("Portfolio Growth Over Time", fontsize=14)
+ax.set_ylabel("Portfolio Value", fontsize=12)
+ax.set_xlabel("Date", fontsize=12)
+ax.grid(True, linestyle='--', alpha=0.5)
 ax.legend()
+plt.xticks(rotation=45)
 st.pyplot(fig)
 
-# Show returns
-st.subheader("Monthly Portfolio Returns")
-st.dataframe(portfolio_returns.apply(lambda x: f"{x*100:.2f}%"))
+# --- Return Table ---
+st.subheader("🧮 Monthly Portfolio Returns")
+returns_display = portfolio_returns.map(lambda x: f"{x*100:.2f}%")
+st.dataframe(returns_display.rename("Return %"))
+
+# Optional Note
+st.markdown("ℹ️ This simulation uses a decreasing linear weighting scheme. You can expand this with rebalancing, costs, or volatility targeting.")
