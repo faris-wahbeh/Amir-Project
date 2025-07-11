@@ -56,29 +56,27 @@ def main():
     num_positions = st.sidebar.slider("Number of Positions", min_value=1, max_value=15, value=5)
     cash_pct = st.sidebar.slider("Cash %", min_value=0.0, max_value=100.0, value=15.0) / 100.0
 
+    # Compute weights
     weights = calculate_declining_weights(num_positions, cash_pct)
-
-    # Use only top N rank columns
     selected_cols = return_cols[:num_positions]
-    weighted_returns = df[selected_cols].div(100) * weights  # Elementwise return * weight
 
-    # Sum weighted returns into a single portfolio return per month
+    # DEBUG: show weights and their sum
+    st.write("**Selected ranks & weights:**", dict(zip(selected_cols, weights)))
+    st.write(f"**Sum of weights (should be {1-cash_pct:.2f}):**", weights.sum())
+
+    # Monthly weighted returns
+    weighted_returns = df[selected_cols].div(100) * weights
     portfolio_returns = weighted_returns.sum(axis=1)
 
-    # Compound model portfolio value
-    model_values = [INITIAL_INVESTMENT]
-    for r in portfolio_returns:
-        model_values.append(model_values[-1] * (1 + r))
-    model_values = model_values[1:]
-    model_series = pd.Series(model_values, index=portfolio_returns.index, name="Model Portfolio")
+    # Compound model portfolio via cumprod
+    model_series = (1 + portfolio_returns).cumprod() * INITIAL_INVESTMENT
+    model_series.name = "Model Portfolio"
 
-    # Benchmark: hardcoded actual returns
-    actual_returns = get_actual_benchmark_returns()
-    actual_values = [INITIAL_INVESTMENT]
-    for r in actual_returns[:len(df)]:
-        actual_values.append(actual_values[-1] * (1 + r / 100))
-    actual_values = actual_values[1:]
-    actual_series = pd.Series(actual_values, index=df.index[:len(actual_values)], name="Benchmark")
+    # Compound benchmark the same way
+    bench_list = get_actual_benchmark_returns()
+    bench_returns = pd.Series(bench_list[: len(df)]).div(100).set_axis(df.index[: len(df)])
+    actual_series = (1 + bench_returns).cumprod() * INITIAL_INVESTMENT
+    actual_series.name = "Benchmark"
 
     # Combine for plotting
     combined = pd.concat([model_series, actual_series], axis=1)
@@ -95,7 +93,7 @@ def main():
     ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
-    # Show performance metrics (Model only)
+    # Performance metrics (Model only)
     st.subheader("Model Performance")
     final_value = model_series.iloc[-1]
     total_return = (final_value - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
