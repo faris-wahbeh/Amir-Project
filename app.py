@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 # ── Constants ─────────────────────────────────────────────────────
 INITIAL_INVESTMENT = 100.0
@@ -53,11 +54,18 @@ def main():
     st.title("Rank‐Weighted Backtest")
     st.markdown("#### Fixed monthly rebalance & linear rank weights")
 
-    # ── Load CSV files ─────────────────────────────────────────────
+    # ── Load CSVs ───────────────────────────────────────────────────
     df_ret, ret_cols = load_returns("ranked_returns_top15.csv")
-    df_names = load_names("ranked_names_top15.csv")
 
-    # ── Load hardcoded actual returns ─────────────────────────────
+    # Load names CSV if available
+    names_file = "ranked_by_exposure_top15.csv"
+    if os.path.exists(names_file):
+        df_names = load_names(names_file)
+    else:
+        df_names = None
+        st.warning(f"'{names_file}' not found. Running without ticker names.")
+
+    # ── Optional: Hardcoded actual returns (display only) ──────────
     monthly_returns = [
         5.34, 0.16, 1.4, 2.8, 4.98, 5.38, 1.27, 7.16, 0.81, -8.68,
         3.52, -8.29, 8.75, 9.03, 3.26, 5.04, -2.46, 6.89, 3.32, -0.27,
@@ -105,34 +113,27 @@ def main():
         name="Model Value"
     )
 
-    # ── Chart: model vs actual ─────────────────────────────────────
+    # ── Chart: model vs actual (actual = display only) ─────────────
     combined = pd.concat([model_series, actual_series], axis=1)
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(combined.index, combined["Model Value"], label="Model Value", linewidth=2)
-    ax.plot(combined.index, combined["Actual Value"], label="Actual Value", linewidth=2, color="orange")
-    ax.set_title("Model vs Actual Portfolio Value", fontsize=14)
+    ax.plot(combined.index, combined["Actual Value"], label="Actual Value (Display Only)", linewidth=2, color="orange")
+    ax.set_title("Model vs Benchmark Portfolio Value", fontsize=14)
     ax.set_xlabel("Date")
     ax.set_ylabel("Portfolio Value ($)")
     ax.legend()
     ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
-    # ── Performance metrics ────────────────────────────────────────
+    # ── Performance metrics (model only) ───────────────────────────
     final_m = model_series.iloc[-1]
-    final_a = actual_series.iloc[-1]
     total_m = (final_m - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
-    total_a = (final_a - INITIAL_INVESTMENT) / INITIAL_INVESTMENT
     ann_m = (final_m / INITIAL_INVESTMENT) ** (12 / len(model_series)) - 1
-    ann_a = (final_a / INITIAL_INVESTMENT) ** (12 / len(actual_series)) - 1
 
-    st.subheader("Performance Metrics")
-    c1, c2 = st.columns(2)
-    c1.metric("Model Total Return", f"{total_m:.2%}")
-    c1.metric("Model Final Value", f"${final_m:,.2f}")
-    c1.metric("Model Annual Return", f"{ann_m:.2%}")
-    c2.metric("Actual Total Return", f"{total_a:.2%}")
-    c2.metric("Actual Final Value", f"${final_a:,.2f}")
-    c2.metric("Actual Annual Return", f"{ann_a:.2%}")
+    st.subheader("Model Performance")
+    st.metric("Total Return", f"{total_m:.2%}")
+    st.metric("Final Value", f"${final_m:,.2f}")
+    st.metric("Annual Return", f"{ann_m:.2%}")
 
 if __name__ == "__main__":
     main()
