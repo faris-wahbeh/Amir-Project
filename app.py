@@ -4,16 +4,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # ── Constants ─────────────────────────────────────────────────────
-INITIAL_INVESTMENT   = 100.0     # starting portfolio value
-DEFAULT_REBALANCE_MONTHS = 1     # fixed monthly rebalance
+INITIAL_INVESTMENT      = 100.0   # starting portfolio value
+DEFAULT_REBALANCE_MONTHS = 1      # fixed monthly rebalance
 
 @st.cache_data(show_spinner=False)
-def load_data(exp_file: str, ret_file: str):
-    # 1) Read the two Excel sheets
-    df_exp = pd.read_excel(exp_file)
-    df_ret = pd.read_excel(ret_file)
+def load_data(exp_path: str, ret_path: str):
+    """
+    Load exposures & returns from CSV, normalize column names & dates,
+    identify the return_rank_* columns.
+    """
+    df_exp = pd.read_csv(exp_path)
+    df_ret = pd.read_csv(ret_path)
 
-    # 2) Normalize helper: clean names, parse date
     def normalize(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         df.columns = (
@@ -30,16 +32,15 @@ def load_data(exp_file: str, ret_file: str):
     df_exp = normalize(df_exp)
     df_ret = normalize(df_ret)
 
-    # 3) Identify your return columns in df_ret
     ret_cols = sorted(
         [c for c in df_ret.columns if c.startswith("return_rank_")],
         key=lambda c: int(c.rsplit("_",1)[-1])
     )
-    # strip "%" and convert to float
+    # strip "%" if present and convert to float
     df_ret[ret_cols] = (
         df_ret[ret_cols]
           .astype(str)
-          .replace("%","",regex=True)
+          .str.rstrip("%")
           .astype(float)
     )
 
@@ -58,16 +59,19 @@ def compute_rank_weights(n: int, cash_pct: float) -> np.ndarray:
 def main():
     st.set_page_config(page_title="Rank‐Weighted Backtest", layout="wide")
     st.title("Rank‐Weighted Backtest")
-    st.markdown("#### Fixed monthly rebalance & linear rank weights")
+    st.markdown("#### Fixed monthly rebalance & linear rank weights from your two CSVs")
 
-    # ── Load your Excel files from the same folder ────────────────
+    # ── Load your CSVs from the same folder ─────────────────────────
     try:
         df_exp, df_ret, ret_cols = load_data(
-            "ranked_by_exposure_top15.xlsx",
-            "ranked_returns_top15.xlsx"
+            "ranked_by_exposure_top15.csv",
+            "ranked_returns_top15.csv"
         )
     except FileNotFoundError as e:
-        st.error(f"Could not find Excel file: {e.filename}")
+        st.error(f"CSV not found: {e.filename}")
+        return
+    except KeyError as e:
+        st.error(str(e))
         return
 
     # ── Sidebar: portfolio inputs ──────────────────────────────────
@@ -75,42 +79,42 @@ def main():
     n        = st.sidebar.slider("Number of Positions (N)", 1, len(ret_cols), len(ret_cols))
     cash_pct = st.sidebar.slider("Cash % (uninvested)", 0.0, 100.0, 15.0) / 100.0
 
-    # Compute & display the linear rank‐weights
+    # Compute & display rank‐based weights
     weights = compute_rank_weights(n, cash_pct)
-    st.sidebar.markdown("**Rank Weights (sum to 100% − cash)**")
+    st.sidebar.markdown("**Rank Weights**")
     for i, w in enumerate(weights, start=1):
         st.sidebar.write(f"Rank {i}: {w*100:.2f}%")
     st.sidebar.write(f"Cash: {cash_pct*100:.2f}%")
 
-    # ── Build the monthly portfolio & period‐returns ──────────────
+    # ── Build weight matrix & compute period returns ──────────────
     periods        = len(df_ret)
     rebalance_flag = (np.arange(periods) % DEFAULT_REBALANCE_MONTHS == 0)
 
-    # Weight matrix: apply weights on rebalance dates, then ffill
     W = pd.DataFrame(0.0, index=df_ret.index, columns=ret_cols)
     W.loc[rebalance_flag, ret_cols[:n]] = weights
     W = W.ffill().fillna(0.0)
 
-    # Compute period returns as weighted sum
     period_ret    = (W * df_ret[ret_cols] / 100.0).sum(axis=1)
-    model_returns = period_ret.tolist()  # plain Python list
+    model_returns = period_ret.tolist()  # e.g. [0.0534, 0.0016, ...]
 
-    # ── Compound the model returns from $100 ───────────────────────
+    # ── Compound model returns from $100 ──────────────────────────
     model_values = [INITIAL_INVESTMENT]
     for r in model_returns:
         model_values.append(model_values[-1] * (1 + r))
     model_values = model_values[1:]
-    model_series = pd.Series(model_values, index=df_ret.index, name="Model Value")
+    model_series = pd.Series(
+        data=model_values,
+        index=df_ret.index,
+        name="Model Value"
+    )
 
-    # ── (Optional) If you also have a separate Actual returns sheet,
-    #     load & compound exactly the same way into actual_series here.
-
-    # ── Plot the compounded curve ──────────────────────────────────
+    # ── Plot the compounded model curve ──────────────────────────
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(model_series.index, model_series.values, label="Model Value", linewidth=2)
+    ymin, ymax = model_series.min()*0.99, model_series.max()*1.01
+    ax.set_ylim(ymin, ymax)
     ax.set_title("Compounded Portfolio Value (Start = $100)", fontsize=14)
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Portfolio Value ($)")
+    ax.set_xlabel("Date"); ax.set_ylabel("Portfolio Value ($)")
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend()
     st.pyplot(fig)
@@ -122,8 +126,8 @@ def main():
 
     st.subheader("Performance Metrics")
     c1, c2 = st.columns(2)
-    c1.metric("Final Value",      f"${final_val:,.2f}")
-    c1.metric("Total Return",     f"{total_ret:.2%}")
+    c1.metric("Final Value",       f"${final_val:,.2f}")
+    c1.metric("Total Return",      f"{total_ret:.2%}")
     c2.metric("Annualized Return", f"{ann_ret:.2%}")
 
 if __name__ == "__main__":
