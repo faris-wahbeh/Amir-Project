@@ -36,7 +36,7 @@ def calculate_declining_weights(num_positions: int, cash_pct: float) -> np.ndarr
     ranks = np.arange(num_positions, 0, -1)  # [N, N-1, …, 1]
     return ranks / ranks.sum() * total
 
-# ──────── portfolio value calculation ───────────────────────────────────────────
+# ──────── fixed compounding logic ───────────────────────────────────────────────
 def calculate_monthly_portfolio_values(
     df: pd.DataFrame,
     return_cols: list[str],
@@ -45,25 +45,22 @@ def calculate_monthly_portfolio_values(
     initial_investment: float = INITIAL_INVESTMENT
 ) -> pd.Series:
     """
-    Returns a Series of portfolio dollar values each month, starting at initial_investment.
-    - Allocates initial_investment * weight_i to each rank-i.
-    - Each month compounds that slice by (1 + return_i/100).
-    - Sums all positions to get total portfolio value.
+    Compounds portfolio value monthly using weighted returns.
+    Each month: apply weights to fixed top-N return columns and compound previous value.
     """
-    weights    = calculate_declining_weights(num_positions, cash_pct)
-    selected   = return_cols[:num_positions]
-    allocation = weights * initial_investment
+    weights = calculate_declining_weights(num_positions, cash_pct)
+    selected = return_cols[:num_positions]
 
-    # build per-column monthly growth factors (1 + r_i / 100)
-    factors = df[selected].div(100).add(1.0)
-    # cumulative product down each column
-    cum_factors = factors.cumprod()
-    # multiply each column by its allocation
-    position_values = cum_factors.multiply(allocation, axis=1)
-    # sum across columns to get total portfolio value each month
-    portfolio_series = position_values.sum(axis=1)
-    portfolio_series.name = "Portfolio Value"
-    return portfolio_series
+    portfolio_values = []
+    current_value = initial_investment
+
+    for idx, row in df.iterrows():
+        monthly_returns = row[selected].values / 100.0
+        growth_factor = np.dot(weights, 1 + monthly_returns)
+        current_value *= growth_factor
+        portfolio_values.append((idx, current_value))
+
+    return pd.Series(dict(portfolio_values), name="Portfolio Value")
 
 # ──────── benchmark data ───────────────────────────────────────────────────────
 def get_actual_benchmark_returns() -> list[float]:
@@ -99,8 +96,8 @@ def main():
     st.dataframe(portfolio_series.round(2).to_frame("Value ($)"))
 
     # ---- benchmark compounding ----
-    bench_pct      = get_actual_benchmark_returns()[: len(df)]
-    bench_factors  = pd.Series(bench_pct, index=df.index).div(100).add(1.0)
+    bench_pct = get_actual_benchmark_returns()[: len(df)]
+    bench_factors = pd.Series(bench_pct, index=df.index).div(100).add(1.0)
     benchmark_series = bench_factors.cumprod().mul(INITIAL_INVESTMENT)
     benchmark_series.name = "Benchmark Value"
 
@@ -110,9 +107,11 @@ def main():
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(combined.index, combined["Portfolio Value"], label="Model", linewidth=2)
     ax.plot(combined.index, combined["Benchmark Value"], label="Benchmark", color="orange", linewidth=2)
-    ax.set_xlabel("Date"); ax.set_ylabel("Value ($)")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Value ($)")
     ax.set_title("Compounded Portfolio vs Benchmark")
-    ax.legend(); ax.grid(True, linestyle="--", alpha=0.5)
+    ax.legend()
+    ax.grid(True, linestyle="--", alpha=0.5)
     st.pyplot(fig)
 
     # ---- performance metrics ----
