@@ -25,12 +25,14 @@ def load_returns(path):
         raise KeyError(f"Expected a 'date' column, got {df.columns.tolist()}")
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
+
     # identify and convert return columns
     ret_cols = sorted(
         [c for c in df.columns if c.startswith("return_rank_")],
         key=lambda c: int(c.rsplit("_",1)[-1])
     )
-    df[ret_cols] = df[ret_cols].replace("%","",regex=True).astype(float)
+    # strip "%" if present and convert to float
+    df[ret_cols] = df[ret_cols].astype(str).replace("%","",regex=True).astype(float)
     return df, ret_cols
 
 def compute_rank_weights(n, cash_pct):
@@ -90,7 +92,7 @@ def main():
     w = pd.DataFrame(0.0, index=df_ret.index, columns=ret_cols)
     w.loc[rebalance_flag, ret_cols[:len(weights)]] = weights
     w = w.ffill().fillna(0.0)
-    # calculate the list of period returns
+    # calculate the list of period returns (as fractions)
     period_ret = (w * df_ret[ret_cols] / 100.0).sum(axis=1)
     model_returns = period_ret.tolist()
 
